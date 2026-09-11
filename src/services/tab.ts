@@ -65,11 +65,18 @@ const ACTION_TRACKER_POLL_MS = 10;
 // beacon, or an animating carousel driving requestAnimationFrame every frame.
 // Without a deadline the loop spins forever while holding the tab lock, so the
 // caller's timeout rejects the request but the lock is never released and every
-// later call on that tab queues behind it. Draining is a best-effort settle, not
-// a correctness requirement: blocked-navigation errors are still checked before
-// and after, so timing out here degrades to "proceed without a full settle"
-// rather than losing the guard.
+// later call on that tab queues behind it.
+//
+// The deadline below applies to background timer/rAF work only. It must never
+// return success while an action-owned navigation safety check is still in
+// flight: ensureNavigationSafetyGuard counts the route before resolving the
+// action token, then awaits validateNavigationUrl (DNS) before recording or
+// aborting a blocked target. Returning success before that completes would
+// report a private navigation as successful. When the deadline expires with a
+// guard check outstanding, keep waiting for the guard alone (ignoring perpetual
+// pending counts) up to a bounded guard deadline, then fail closed.
 const ACTION_TRACKER_DRAIN_TIMEOUT_MS = 3000;
+const ACTION_TRACKER_GUARD_TIMEOUT_MS = 10000;
 type NavigationRoute = {
 	request: () => {
 		url: () => string;
@@ -754,12 +761,35 @@ export async function withBlockedNavigationTracking<T>(
 
 		let sawPendingWork = false;
 		const drainDeadline = Date.now() + ACTION_TRACKER_DRAIN_TIMEOUT_MS;
+		let guardDeadline: number | null = null;
 		while (true) {
 			throwTrackedBlockedNavigationErrorIfPresent(page, actionToken);
 			if (sawPendingWork) {
 				throwBlockedNavigationErrorIfPresent(page);
 			}
+			const trackedGuardInFlight = getTrackedInFlightGuardCheckCount(page, actionToken);
+			const globalGuardInFlight = getInFlightGuardCheckCount(page);
+			const guardInFlight = trackedGuardInFlight > 0 || globalGuardInFlight > 0;
+			if (guardDeadline !== null) {
+				// Background-work deadline already expired. Wait only for the
+				// safety guard so perpetual timers/rAF cannot extend the wait.
+				if (!guardInFlight) {
+					break;
+				}
+				if (Date.now() >= guardDeadline) {
+					throw createPostActionNavigationTimeoutError();
+				}
+				await new Promise((resolve) => setTimeout(resolve, ACTION_TRACKER_POLL_MS));
+				continue;
+			}
 			if (Date.now() >= drainDeadline) {
+				if (guardInFlight) {
+					// Safety result unknown: never return success. Fail closed
+					// once the bounded guard wait below expires; a blocked
+					// target recorded meanwhile surfaces via the throw above.
+					guardDeadline = Date.now() + ACTION_TRACKER_GUARD_TIMEOUT_MS;
+					continue;
+				}
 				log('warn', 'action drain timed out, proceeding without full settle', {
 					timeoutMs: ACTION_TRACKER_DRAIN_TIMEOUT_MS,
 				});
@@ -767,12 +797,13 @@ export async function withBlockedNavigationTracking<T>(
 			}
 			const pendingCount = await getTrackedPendingCount(page, actionToken);
 			const inFlightGuardCount = getTrackedInFlightGuardCheckCount(page, actionToken);
-			if (pendingCount === 0 && inFlightGuardCount === 0) {
+			const totalGuardInFlight = inFlightGuardCount + getInFlightGuardCheckCount(page);
+			if (pendingCount === 0 && totalGuardInFlight === 0) {
 				if (!sawPendingWork) {
 					await new Promise((resolve) => setTimeout(resolve, ACTION_TRACKER_POLL_MS));
 					throwTrackedBlockedNavigationErrorIfPresent(page, actionToken);
 					throwBlockedNavigationErrorIfPresent(page);
-					if ((await getTrackedPendingCount(page, actionToken)) === 0 && getTrackedInFlightGuardCheckCount(page, actionToken) === 0) {
+					if ((await getTrackedPendingCount(page, actionToken)) === 0 && getTrackedInFlightGuardCheckCount(page, actionToken) === 0 && getInFlightGuardCheckCount(page) === 0) {
 						break;
 					}
 					sawPendingWork = true;
@@ -781,7 +812,7 @@ export async function withBlockedNavigationTracking<T>(
 				await new Promise((resolve) => setTimeout(resolve, ACTION_TRACKER_POLL_MS));
 				throwTrackedBlockedNavigationErrorIfPresent(page, actionToken);
 				throwBlockedNavigationErrorIfPresent(page);
-				if ((await getTrackedPendingCount(page, actionToken)) === 0 && getTrackedInFlightGuardCheckCount(page, actionToken) === 0) break;
+				if ((await getTrackedPendingCount(page, actionToken)) === 0 && getTrackedInFlightGuardCheckCount(page, actionToken) === 0 && getInFlightGuardCheckCount(page) === 0) break;
 			} else {
 				sawPendingWork = true;
 				await new Promise((resolve) => setTimeout(resolve, ACTION_TRACKER_POLL_MS));

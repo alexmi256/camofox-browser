@@ -734,6 +734,160 @@ describe('validateUrl() network safety', () => {
     }
   });
 
+  test('bounds the drain on a page whose tracked work never reaches zero', async () => {
+    // Pages with perpetual background activity -- a heartbeat interval, an
+    // analytics beacon, an animating carousel driving rAF every frame -- never
+    // report a pending count of zero. The drain loop must give up on its own
+    // deadline instead of spinning forever while holding the tab lock.
+    jest.useFakeTimers();
+    try {
+      const trackerState = {
+        activeToken: 0,
+        // Never drains: mimics a page with a permanently live interval/rAF.
+        pendingCounts: new Map(),
+      };
+      const context = { route: jest.fn(async () => {}) };
+      const page = {
+        context: jest.fn(() => context),
+        on: jest.fn(),
+        addInitScript: jest.fn().mockResolvedValue(undefined),
+        evaluate: jest.fn(async (fn, arg) => {
+          const source = String(fn);
+          if (source.includes('installActionTrackerScript')) return undefined;
+          if (source.includes('startAction')) {
+            trackerState.activeToken = arg;
+            return undefined;
+          }
+          if (source.includes('finishAction')) {
+            if (trackerState.activeToken === arg) trackerState.activeToken = 0;
+            return undefined;
+          }
+          // Always busy, no matter how long the loop waits.
+          if (source.includes('getPendingCount')) return 1;
+          if (source.includes('getActiveToken')) return trackerState.activeToken || 0;
+          return undefined;
+        }),
+        waitForTimeout: jest.fn((ms) => new Promise((resolve) => setTimeout(resolve, ms === 0 ? 30 : ms))),
+      };
+
+      await createTabState(page);
+
+      let settled = false;
+      const action = withTabLock('busy-tab', () => withBlockedNavigationTracking(page, async () => 'result'))
+        .then((value) => {
+          settled = true;
+          return value;
+        });
+
+      // Well past the drain deadline: the loop must have given up by now.
+      await jest.advanceTimersByTimeAsync(10000);
+
+      await expect(action).resolves.toBe('result');
+      expect(settled).toBe(true);
+
+      // The lock must be free for the next caller, which is what the unbounded
+      // loop broke: the request timed out but the loop kept the lock forever.
+      let secondRan = false;
+      await withTabLock('busy-tab', async () => {
+        secondRan = true;
+      });
+      expect(secondRan).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('fails boundedly when an action-owned guard check outlives the drain deadline', async () => {
+    // A slow DNS resolution that outlives ACTION_TRACKER_DRAIN_TIMEOUT_MS must
+    // not let the action report success before the guard records a blocked
+    // private target. The drain must fail boundedly and release the tab lock.
+    jest.useFakeTimers();
+    let resolveLookup;
+    try {
+      lookupMock.mockImplementation(
+        () => new Promise((resolve) => {
+          resolveLookup = resolve;
+        }),
+      );
+
+      let routeHandler;
+      const trackerState = {
+        activeToken: 0,
+        pendingCounts: new Map(),
+      };
+      const blockedRoute = {
+        request: () => ({
+          url: () => 'http://public-looking.example.test/latest/meta-data',
+          isNavigationRequest: () => true,
+          frame: () => ({ page: () => page }),
+        }),
+        continue: jest.fn().mockResolvedValue(undefined),
+        abort: jest.fn().mockResolvedValue(undefined),
+      };
+      const context = {
+        route: jest.fn(async (_pattern, handler) => {
+          routeHandler = handler;
+        }),
+      };
+      const page = {
+        context: jest.fn(() => context),
+        on: jest.fn(),
+        addInitScript: jest.fn().mockResolvedValue(undefined),
+        evaluate: jest.fn(async (fn, arg) => {
+          const source = String(fn);
+          if (source.includes('installActionTrackerScript')) return undefined;
+          if (source.includes('startAction')) {
+            trackerState.activeToken = arg;
+            return undefined;
+          }
+          if (source.includes('finishAction')) {
+            if (trackerState.activeToken === arg) trackerState.activeToken = 0;
+            return undefined;
+          }
+          if (source.includes('getPendingCount')) return trackerState.pendingCounts.get(arg) || 0;
+          if (source.includes('getActiveToken')) return trackerState.activeToken || 0;
+          return undefined;
+        }),
+        waitForTimeout: jest.fn((ms) => new Promise((resolve) => setTimeout(resolve, ms === 0 ? 30 : ms))),
+      };
+
+      await createTabState(page);
+
+      let resolved = false;
+      const action = withTabLock('slow-guard-tab', () => withBlockedNavigationTracking(page, async () => {
+        setTimeout(() => {
+          void routeHandler(blockedRoute);
+        }, 0);
+      })).then((value) => {
+        resolved = true;
+        return value;
+      });
+      const actionExpectation = expect(action).rejects.toMatchObject({
+        statusCode: 400,
+        message: expect.stringContaining('did not settle'),
+      });
+
+      // The guard is still waiting on DNS when the action-drain deadline expires.
+      await jest.advanceTimersByTimeAsync(3500);
+      await actionExpectation;
+      expect(resolved).toBe(false);
+
+      // The lock must be free even though the guard check is still unresolved.
+      let secondRan = false;
+      await withTabLock('slow-guard-tab', async () => {
+        secondRan = true;
+      });
+      expect(secondRan).toBe(true);
+
+      // The late guard result still aborts the private navigation.
+      resolveLookup([{ address: '127.0.0.1', family: 4 }]);
+      await jest.runOnlyPendingTimersAsync();
+      expect(blockedRoute.abort).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('keeps action-scheduled RAF navigation attributed until the frame runs', async () => {
     let routeHandler;
     let nextRafId = 1;

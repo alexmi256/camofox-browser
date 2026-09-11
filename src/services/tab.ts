@@ -59,6 +59,20 @@ const CONSOLE_BUFFER_SIZE = CONFIG.consoleBufferSize;
 const POST_ACTION_NAVIGATION_SETTLE_MS = 500;
 const POST_ACTION_NAVIGATION_DRAIN_TIMEOUT_MS = POST_ACTION_NAVIGATION_SETTLE_MS;
 const ACTION_TRACKER_POLL_MS = 10;
+// Upper bound on the post-action drain loop below. The loop waits for tracked
+// async work (setTimeout/setInterval/rAF) to reach zero, which never happens on
+// pages with perpetual background activity -- a heartbeat interval, an analytics
+// beacon, or an animating carousel driving requestAnimationFrame every frame.
+// Without a deadline the loop spins forever while holding the tab lock, so the
+// caller's timeout rejects the request but the lock is never released and every
+// later call on that tab queues behind it.
+//
+// The deadline only abandons perpetual background work. An action-owned
+// navigation safety check that is still resolving must not be abandoned:
+// returning success before its blocked-navigation result is known would break
+// the blocked-navigation response contract. When a guard check is still in
+// flight at the deadline the drain fails boundedly instead (see below).
+const ACTION_TRACKER_DRAIN_TIMEOUT_MS = 3000;
 type NavigationRoute = {
 	request: () => {
 		url: () => string;
@@ -742,10 +756,26 @@ export async function withBlockedNavigationTracking<T>(
 		}
 
 		let sawPendingWork = false;
+		const drainDeadline = Date.now() + ACTION_TRACKER_DRAIN_TIMEOUT_MS;
 		while (true) {
 			throwTrackedBlockedNavigationErrorIfPresent(page, actionToken);
 			if (sawPendingWork) {
 				throwBlockedNavigationErrorIfPresent(page);
+			}
+			if (Date.now() >= drainDeadline) {
+				// Distinguish perpetual background work from an action-owned safety
+				// check. Abandoning a never-settling timer/rAF is a benign "less
+				// settled" page, but returning success while a navigation guard is
+				// still resolving would report the action as successful before its
+				// blocked-navigation result is known. Fail boundedly in that case;
+				// the error path still releases the tab lock.
+				if (getTrackedInFlightGuardCheckCount(page, actionToken) > 0) {
+					throw createPostActionNavigationTimeoutError();
+				}
+				log('warn', 'action drain timed out, proceeding without full settle', {
+					timeoutMs: ACTION_TRACKER_DRAIN_TIMEOUT_MS,
+				});
+				break;
 			}
 			const pendingCount = await getTrackedPendingCount(page, actionToken);
 			const inFlightGuardCount = getTrackedInFlightGuardCheckCount(page, actionToken);

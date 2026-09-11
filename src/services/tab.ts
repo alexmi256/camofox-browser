@@ -65,10 +65,13 @@ const ACTION_TRACKER_POLL_MS = 10;
 // beacon, or an animating carousel driving requestAnimationFrame every frame.
 // Without a deadline the loop spins forever while holding the tab lock, so the
 // caller's timeout rejects the request but the lock is never released and every
-// later call on that tab queues behind it. Draining is a best-effort settle, not
-// a correctness requirement: blocked-navigation errors are still checked before
-// and after, so timing out here degrades to "proceed without a full settle"
-// rather than losing the guard.
+// later call on that tab queues behind it.
+//
+// The deadline only abandons perpetual background work. An action-owned
+// navigation safety check that is still resolving must not be abandoned:
+// returning success before its blocked-navigation result is known would break
+// the blocked-navigation response contract. When a guard check is still in
+// flight at the deadline the drain fails boundedly instead (see below).
 const ACTION_TRACKER_DRAIN_TIMEOUT_MS = 3000;
 type NavigationRoute = {
 	request: () => {
@@ -760,6 +763,15 @@ export async function withBlockedNavigationTracking<T>(
 				throwBlockedNavigationErrorIfPresent(page);
 			}
 			if (Date.now() >= drainDeadline) {
+				// Distinguish perpetual background work from an action-owned safety
+				// check. Abandoning a never-settling timer/rAF is a benign "less
+				// settled" page, but returning success while a navigation guard is
+				// still resolving would report the action as successful before its
+				// blocked-navigation result is known. Fail boundedly in that case;
+				// the error path still releases the tab lock.
+				if (getTrackedInFlightGuardCheckCount(page, actionToken) > 0) {
+					throw createPostActionNavigationTimeoutError();
+				}
 				log('warn', 'action drain timed out, proceeding without full settle', {
 					timeoutMs: ACTION_TRACKER_DRAIN_TIMEOUT_MS,
 				});

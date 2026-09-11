@@ -797,6 +797,97 @@ describe('validateUrl() network safety', () => {
     }
   });
 
+  test('fails boundedly when an action-owned guard check outlives the drain deadline', async () => {
+    // A slow DNS resolution that outlives ACTION_TRACKER_DRAIN_TIMEOUT_MS must
+    // not let the action report success before the guard records a blocked
+    // private target. The drain must fail boundedly and release the tab lock.
+    jest.useFakeTimers();
+    let resolveLookup;
+    try {
+      lookupMock.mockImplementation(
+        () => new Promise((resolve) => {
+          resolveLookup = resolve;
+        }),
+      );
+
+      let routeHandler;
+      const trackerState = {
+        activeToken: 0,
+        pendingCounts: new Map(),
+      };
+      const blockedRoute = {
+        request: () => ({
+          url: () => 'http://public-looking.example.test/latest/meta-data',
+          isNavigationRequest: () => true,
+          frame: () => ({ page: () => page }),
+        }),
+        continue: jest.fn().mockResolvedValue(undefined),
+        abort: jest.fn().mockResolvedValue(undefined),
+      };
+      const context = {
+        route: jest.fn(async (_pattern, handler) => {
+          routeHandler = handler;
+        }),
+      };
+      const page = {
+        context: jest.fn(() => context),
+        on: jest.fn(),
+        addInitScript: jest.fn().mockResolvedValue(undefined),
+        evaluate: jest.fn(async (fn, arg) => {
+          const source = String(fn);
+          if (source.includes('installActionTrackerScript')) return undefined;
+          if (source.includes('startAction')) {
+            trackerState.activeToken = arg;
+            return undefined;
+          }
+          if (source.includes('finishAction')) {
+            if (trackerState.activeToken === arg) trackerState.activeToken = 0;
+            return undefined;
+          }
+          if (source.includes('getPendingCount')) return trackerState.pendingCounts.get(arg) || 0;
+          if (source.includes('getActiveToken')) return trackerState.activeToken || 0;
+          return undefined;
+        }),
+        waitForTimeout: jest.fn((ms) => new Promise((resolve) => setTimeout(resolve, ms === 0 ? 30 : ms))),
+      };
+
+      await createTabState(page);
+
+      let resolved = false;
+      const action = withTabLock('slow-guard-tab', () => withBlockedNavigationTracking(page, async () => {
+        setTimeout(() => {
+          void routeHandler(blockedRoute);
+        }, 0);
+      })).then((value) => {
+        resolved = true;
+        return value;
+      });
+      const actionExpectation = expect(action).rejects.toMatchObject({
+        statusCode: 400,
+        message: expect.stringContaining('did not settle'),
+      });
+
+      // The guard is still waiting on DNS when the action-drain deadline expires.
+      await jest.advanceTimersByTimeAsync(3500);
+      await actionExpectation;
+      expect(resolved).toBe(false);
+
+      // The lock must be free even though the guard check is still unresolved.
+      let secondRan = false;
+      await withTabLock('slow-guard-tab', async () => {
+        secondRan = true;
+      });
+      expect(secondRan).toBe(true);
+
+      // The late guard result still aborts the private navigation.
+      resolveLookup([{ address: '127.0.0.1', family: 4 }]);
+      await jest.runOnlyPendingTimersAsync();
+      expect(blockedRoute.abort).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('keeps action-scheduled RAF navigation attributed until the frame runs', async () => {
     let routeHandler;
     let nextRafId = 1;

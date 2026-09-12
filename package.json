@@ -66,7 +66,7 @@
     "test:debug": "cross-env DEBUG_SERVER=1 NODE_OPTIONS=--experimental-vm-modules jest --runInBand --detectOpenHandles",
     "verify:package": "node scripts/verify-package.mjs",
     "build:portable:windows": "node scripts/build-portable-windows.mjs",
-    "postinstall": "npx camoufox-js fetch || true"
+    "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
     "camoufox-js": "^0.12.0",

@@ -1,7 +1,10 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { Command } = require('commander');
+// commander v15+ is pure ESM, so it cannot be require()d under Jest on
+// Node <24.9 — load it with a dynamic import (requires
+// --experimental-vm-modules, set on the npm test script).
+let Command;
 
 function makeContext(postImpl, printed) {
   return {
@@ -25,8 +28,9 @@ function makeContext(postImpl, printed) {
 describe('extract-structured CLI command (unit)', () => {
   let registerContentCommands;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.resetModules();
+    ({ Command } = await import('commander'));
     ({ registerContentCommands } = require('../../dist/src/cli/commands/content'));
   });
 

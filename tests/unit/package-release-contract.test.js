@@ -7,6 +7,6 @@ describe('Package release contract', () => {
       fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf8'),
     );
 
-    expect(packageJson.dependencies['playwright-core']).toBe('1.58.1');
+    expect(packageJson.dependencies['playwright-core']).toBe('1.59.1');
   });
 });

@@ -39,7 +39,7 @@ describe('CLI session file version handling', () => {
 		writeRawSessionFile(sessionName, JSON.stringify(payload, null, 2));
 	}
 
-	function createHarness(transportOverrides = {}) {
+	async function createHarness(transportOverrides = {}) {
 		process.env.HOME = tmpHome;
 		jest.resetModules();
 		jest.doMock('node:os', () => ({
@@ -47,7 +47,10 @@ describe('CLI session file version handling', () => {
 			homedir: () => tmpHome,
 		}));
 
-		const { Command } = require('commander');
+		// commander v15+ is pure ESM and cannot be require()d under Jest on
+		// Node <24.9 — load it with a dynamic import (requires
+		// --experimental-vm-modules, set on the npm test script).
+		const { Command } = await import('commander');
 		const { registerSessionCommands } = require('../../dist/src/cli/commands/session');
 
 		const transport = {
@@ -74,7 +77,7 @@ describe('CLI session file version handling', () => {
 	}
 
 	async function runCli(args, transportOverrides) {
-		const harness = createHarness(transportOverrides);
+		const harness = await createHarness(transportOverrides);
 		await harness.program.parseAsync(['node', 'test', ...args]);
 		return harness;
 	}

@@ -33,9 +33,9 @@ The portable Windows distribution redistributes the following runtime components
 - The Windows x64 native package is required by `impit`, a runtime dependency of `camoufox-js`.
 - A copy of the Apache License 2.0 is retained in the portable bundle at `licenses/Apache-2.0.txt`.
 
-## playwright-core 1.58.1 / VS Code Codicon assets
+## playwright-core 1.59.1 / VS Code Codicon assets
 
-- Project: https://github.com/microsoft/playwright/tree/v1.58.1
+- Project: https://github.com/microsoft/playwright/tree/v1.59.1
 - `playwright-core` is Apache-2.0 and retains its upstream `LICENSE`, `NOTICE`, and `ThirdPartyNotices.txt` under `app/node_modules/playwright-core/`.
 - Playwright's bundled Codicon font assets originate from its `packages/web/src/third_party/vscode/` source directory and are covered there by the MIT License, Copyright (c) 2015 - present Microsoft Corporation.
 - The exact upstream MIT license text for those Codicon assets is retained at `licenses/Playwright-VSCode-Codicon-MIT.txt`.

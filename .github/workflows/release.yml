@@ -55,7 +55,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/redf0x1/camofox-browser
+          images: ghcr.io/alexmi256/camofox-browser
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

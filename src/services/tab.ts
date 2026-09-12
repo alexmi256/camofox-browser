@@ -65,11 +65,21 @@ const ACTION_TRACKER_POLL_MS = 10;
 // beacon, or an animating carousel driving requestAnimationFrame every frame.
 // Without a deadline the loop spins forever while holding the tab lock, so the
 // caller's timeout rejects the request but the lock is never released and every
-// later call on that tab queues behind it. Draining is a best-effort settle, not
-// a correctness requirement: blocked-navigation errors are still checked before
-// and after, so timing out here degrades to "proceed without a full settle"
-// rather than losing the guard.
+// later call on that tab queues behind it. Draining page work is a best-effort
+// settle, not a correctness requirement: blocked-navigation errors are still
+// checked before and after, so timing out here degrades to "proceed without a
+// full settle" rather than losing the guard.
 const ACTION_TRACKER_DRAIN_TIMEOUT_MS = 3000;
+// Deadline expiry only forgives perpetual page work (timers/rAF/beacons), never
+// an unresolved navigation safety check. ensureNavigationSafetyGuard increments
+// its in-flight counter before awaiting validateNavigationUrl (which performs a
+// DNS lookup) and only records/aborts a blocked target afterwards, so a slow
+// lookup can still be unresolved when the drain deadline expires. Returning
+// success then would report an action as successful before its block decision is
+// known. Guards get this extra bounded window to settle; if an action-owned one
+// is still unresolved when it expires the action fails instead of reporting an
+// unknown-safety success.
+const ACTION_GUARD_SETTLE_GRACE_MS = 2000;
 type NavigationRoute = {
 	request: () => {
 		url: () => string;
@@ -754,16 +764,11 @@ export async function withBlockedNavigationTracking<T>(
 
 		let sawPendingWork = false;
 		const drainDeadline = Date.now() + ACTION_TRACKER_DRAIN_TIMEOUT_MS;
+		let guardSettleDeadline: number | null = null;
 		while (true) {
 			throwTrackedBlockedNavigationErrorIfPresent(page, actionToken);
 			if (sawPendingWork) {
 				throwBlockedNavigationErrorIfPresent(page);
-			}
-			if (Date.now() >= drainDeadline) {
-				log('warn', 'action drain timed out, proceeding without full settle', {
-					timeoutMs: ACTION_TRACKER_DRAIN_TIMEOUT_MS,
-				});
-				break;
 			}
 			const pendingCount = await getTrackedPendingCount(page, actionToken);
 			const inFlightGuardCount = getTrackedInFlightGuardCheckCount(page, actionToken);
@@ -783,6 +788,39 @@ export async function withBlockedNavigationTracking<T>(
 				throwBlockedNavigationErrorIfPresent(page);
 				if ((await getTrackedPendingCount(page, actionToken)) === 0 && getTrackedInFlightGuardCheckCount(page, actionToken) === 0) break;
 			} else {
+				if (Date.now() >= drainDeadline) {
+					if (inFlightGuardCount === 0 && getInFlightGuardCheckCount(page) === 0) {
+						// Only perpetual page work is left. It can never reach
+						// zero, so stop waiting for it and proceed.
+						log('warn', 'action drain timed out, proceeding without full settle', {
+							timeoutMs: ACTION_TRACKER_DRAIN_TIMEOUT_MS,
+						});
+						break;
+					}
+					// A navigation is still being validated. Wait for the
+					// verdict, but only for a bounded window so a wedged guard
+					// cannot hold the tab lock the way the unbounded drain did.
+					guardSettleDeadline = guardSettleDeadline ?? (Date.now() + ACTION_GUARD_SETTLE_GRACE_MS);
+					if (Date.now() >= guardSettleDeadline) {
+						// Unassociated guard checks are background navigations:
+						// the guard still aborts them, but they are not this
+						// action's response. An action-owned guard means the
+						// block decision for this action is still unknown, so
+						// fail boundedly instead of reporting success.
+						if (inFlightGuardCount === 0) {
+							log('warn', 'action drain timed out with background navigation in flight, proceeding without full settle', {
+								timeoutMs: ACTION_TRACKER_DRAIN_TIMEOUT_MS,
+								graceMs: ACTION_GUARD_SETTLE_GRACE_MS,
+							});
+							break;
+						}
+						log('warn', 'action navigation guard did not settle before the drain deadline', {
+							timeoutMs: ACTION_TRACKER_DRAIN_TIMEOUT_MS,
+							graceMs: ACTION_GUARD_SETTLE_GRACE_MS,
+						});
+						throw createPostActionNavigationTimeoutError();
+					}
+				}
 				sawPendingWork = true;
 				await new Promise((resolve) => setTimeout(resolve, ACTION_TRACKER_POLL_MS));
 			}

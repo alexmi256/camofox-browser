@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [2.4.8-beta.1] - 2026-XX-XX
+
+### Changed
+- Bound the post-action drain loop so busy pages cannot deadlock a tab - #33
+
+### Security
+- Refreshed the dependency lock for current advisories and override `adm-zip` to the patched `0.6.1` release without changing the supported Node floor or `camoufox-js` version.
+- Updated express from `^4.18.2` to `^5.2.1` to further fix failing CI due to vulnerability issues
+
+
 ## [2.4.7] - 2026-08-13
 
 ### Added

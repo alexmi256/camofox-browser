@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const EXPECTED_NODE_FLOOR = '20';
-const EXPECTED_PLAYWRIGHT_CORE = '1.58.1';
+const EXPECTED_PLAYWRIGHT_CORE = '1.59.1';
 const EXPECTED_BINS = ['camofox', 'camofox-browser'];
 const EXPECTED_FILES = [
   'package.json',
@@ -87,7 +87,9 @@ try {
   console.log('\n--- Step 2: Pack ---');
   const packJson = runNpm(['pack', '--json', '--pack-destination', tempRoot], { capture: true });
   const packResult = JSON.parse(packJson);
-  const packed = packResult[0];
+  // npm <=11 reports `pack --json` as an array, npm 12+ as an object keyed by
+  // package name — accept both shapes.
+  const packed = Array.isArray(packResult) ? packResult[0] : packResult[Object.keys(packResult)[0]];
   if (!packed?.filename) throw new Error('npm pack did not report a tarball filename');
   const tarballPath = join(tempRoot, packed.filename);
   if (!existsSync(tarballPath)) throw new Error(`npm pack did not create ${tarballPath}`);

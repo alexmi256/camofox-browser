@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const EXPECTED_NODE_FLOOR = '20';
-const EXPECTED_PLAYWRIGHT_CORE = '1.58.1';
+const EXPECTED_PLAYWRIGHT_CORE = '1.59.1';
 const EXPECTED_BINS = ['camofox', 'camofox-browser'];
 const EXPECTED_FILES = [
   'package.json',

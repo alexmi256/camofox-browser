@@ -44,7 +44,7 @@ const CAMOUFOX_LICENSE_SHA256 = '1f256ecad192880510e84ad60474eab7589218784b9a50b
 
 const APACHE_LICENSE_URL = 'https://www.apache.org/licenses/LICENSE-2.0.txt';
 const APACHE_LICENSE_SHA256 = 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30';
-const PLAYWRIGHT_VERSION = '1.58.1';
+const PLAYWRIGHT_VERSION = '1.59.1';
 const PLAYWRIGHT_CODICON_LICENSE_URL = `https://raw.githubusercontent.com/microsoft/playwright/v${PLAYWRIGHT_VERSION}/packages/web/src/third_party/vscode/LICENSE.txt`;
 const PLAYWRIGHT_CODICON_LICENSE_SHA256 = '20535828272932407c2f5172aeb714ac7b374a34e5ecb1825af509f2902cde54';
 
